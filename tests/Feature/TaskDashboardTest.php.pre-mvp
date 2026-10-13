@@ -1,0 +1,29 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Task;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class TaskDashboardTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_empty_dashboard_has_zero_counts(): void
+    {
+        $this->get('/')->assertOk()->assertViewHas('summary', ['total' => 0, 'done' => 0, 'in_progress' => 0, 'to_do' => 0, 'overdue' => 0, 'completion_rate' => 0]);
+    }
+
+    public function test_dashboard_counts_main_statuses_and_overdue_dates(): void
+    {
+        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-10-12 12:00:00', 'Asia/Kuala_Lumpur'));
+        foreach ([['done', '2026-10-10'], ['in progress', '2026-10-11'], ['to do', '2026-10-12'], ['to do', '2026-10-13']] as [$status, $date]) {
+            Task::create(['title' => 'Fictional task', 'description' => 'Demo', 'owner' => 'Fictional Officer', 'due_date' => $date, 'priority' => 'medium', 'status' => $status]);
+        }
+        Task::first()->activities()->create(['title' => 'Demo activity', 'status' => 'done']);
+        $this->get('/')->assertOk()->assertViewHas('summary', ['total' => 4, 'done' => 1, 'in_progress' => 1, 'to_do' => 2, 'overdue' => 1, 'completion_rate' => 25])->assertSee('25%');
+        $this->withSession(['locale' => 'ms'])->get('/')->assertSee('Papan pemuka tugasan')->assertSee('Dalam tindakan');
+        $this->travelBack();
+    }
+}

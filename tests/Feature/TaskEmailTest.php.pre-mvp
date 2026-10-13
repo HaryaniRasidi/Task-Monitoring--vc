@@ -1,0 +1,51 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Mail\TaskAssigned;
+use App\Models\Task;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Mail;
+use Symfony\Component\Mailer\Exception\TransportException;
+use Tests\TestCase;
+
+class TaskEmailTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private function input(): array
+    {
+        return ['title' => 'Fictional task', 'description' => '<b>Demo</b>', 'owner' => 'Fictional Officer', 'owner_email' => 'officer@example.test', 'due_date' => '2026-11-01', 'priority' => 'high', 'status' => 'to do'];
+    }
+
+    public function test_notification_is_sent_to_assigned_officer_after_save(): void
+    {
+        Mail::fake();
+        $this->post('/tasks', $this->input())->assertRedirect('/')->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('tasks', ['owner_email' => 'officer@example.test']);
+        Mail::assertSent(TaskAssigned::class, fn ($mail) => $mail->hasTo('officer@example.test') && $mail->task->exists);
+        Mail::assertSentCount(1);
+        $html = (new TaskAssigned(Task::firstOrFail()))->render();
+        $this->assertStringContainsString('&lt;b&gt;Demo&lt;/b&gt;', $html);
+    }
+
+    public function test_invalid_or_missing_email_does_not_save_or_send(): void
+    {
+        Mail::fake();
+        foreach (['', 'not-an-email'] as $email) {
+            $input = $this->input();
+            $input['owner_email'] = $email;
+            $this->post('/tasks', $input)->assertSessionHasErrors('owner_email');
+        }
+        $this->assertDatabaseCount('tasks', 0);
+        Mail::assertNothingSent();
+    }
+
+    public function test_transport_failure_preserves_task_and_shows_warning(): void
+    {
+        Mail::shouldReceive('to')->once()->with('officer@example.test')->andReturnSelf();
+        Mail::shouldReceive('send')->once()->andThrow(new TransportException('Test failure'));
+        $this->post('/tasks', $this->input())->assertRedirect('/')->assertSessionHas('warning');
+        $this->assertDatabaseCount('tasks', 1);
+    }
+}

@@ -1,0 +1,75 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Task;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class TaskActivityTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private function task(): Task
+    {
+        return Task::create(['title' => 'Fictional task', 'description' => 'Demo', 'owner' => 'Fictional Officer', 'due_date' => '2026-11-01', 'priority' => 'low', 'status' => 'to do']);
+    }
+
+    public function test_activity_can_be_created_listed_and_updated(): void
+    {
+        $task = $this->task();
+        $this->post(route('tasks.activities.store', $task), ['title' => '<b>Review</b>', 'notes' => 'Demo notes', 'status' => 'in progress', 'task_id' => 999, 'activity_date' => '2026-10-12'])->assertRedirect(route('tasks.activities.index', $task));
+        $activity = $task->activities()->firstOrFail();
+        $this->assertSame($task->id, $activity->task_id);
+        $this->get(route('tasks.activities.index', $task))->assertOk()->assertSee('<b>Review</b>')->assertDontSee('<b>Review</b>', false)->assertSee('Demo notes')->assertSee('12/10/2026');
+        $this->assertSame('2026-10-12', $activity->activity_date->format('Y-m-d'));
+        $this->patch(route('tasks.activities.update', [$task, $activity]), ['title' => 'Updated title', 'notes' => 'Updated notes', 'activity_date' => '2026-10-13', 'status' => 'done', 'task_id' => 999])->assertRedirect();
+        $this->assertSame('Updated title', $activity->fresh()->title);
+        $this->assertSame('Updated notes', $activity->fresh()->notes);
+        $this->assertSame('2026-10-13', $activity->fresh()->activity_date->format('Y-m-d'));
+        $this->assertSame($task->id, $activity->fresh()->task_id);
+        $this->assertSame('done', $activity->fresh()->status);
+        $this->assertSame('to do', $task->fresh()->status);
+        $this->get('/')->assertOk()->assertSee('1 / 1');
+    }
+
+    public function test_activity_date_is_required_and_must_be_valid(): void
+    {
+        $task = $this->task();
+        $input = ['title' => 'Demo activity', 'status' => 'to do'];
+        $this->post(route('tasks.activities.store', $task), $input)->assertSessionHasErrors('activity_date');
+        $this->post(route('tasks.activities.store', $task), $input + ['activity_date' => '2026-02-30'])
+            ->assertSessionHasErrors('activity_date')->assertSessionHasInput('title', 'Demo activity');
+        $this->assertDatabaseCount('task_activities', 0);
+        $task->activities()->create($input);
+        $this->get(route('tasks.activities.index', $task))->assertOk()->assertSee('Not recorded')->assertSee('name="activity_date"', false);
+    }
+    public function test_edit_page_prefills_fields_and_rejects_invalid_changes(): void
+    {
+        $task = $this->task();
+        $activity = $task->activities()->create(['title' => 'Original title', 'notes' => 'Original notes', 'activity_date' => '2026-10-12', 'status' => 'to do']);
+        $this->get(route('tasks.activities.edit', [$task, $activity]))->assertOk()->assertSee('value="Original title"', false)->assertSee('Original notes')->assertSee('value="2026-10-12"', false);
+        $url = route('tasks.activities.edit', [$task, $activity]);
+        $this->from($url)->patch(route('tasks.activities.update', [$task, $activity]), ['title' => 'Keep my input', 'notes' => str_repeat('x', 5001), 'activity_date' => '2026-02-30', 'status' => 'invalid'])
+            ->assertRedirect($url)->assertSessionHasErrors(['notes', 'activity_date', 'status'])->assertSessionHasInput('title', 'Keep my input');
+        $this->get($url)->assertOk()->assertSee('value="Keep my input"', false)->assertSee('id="activity-date-error"', false);
+        $this->assertSame('Original title', $activity->fresh()->title);
+        $this->get(route('tasks.activities.edit', [$this->task(), $activity]))->assertNotFound();
+    }
+    public function test_invalid_input_is_rejected(): void
+    {
+        $task = $this->task();
+        $this->post(route('tasks.activities.store', $task), ['title' => '', 'notes' => str_repeat('x', 5001), 'status' => 'invalid'])->assertSessionHasErrors(['title', 'notes', 'status']);
+        $this->assertDatabaseCount('task_activities', 0);
+    }
+
+    public function test_activity_cannot_be_updated_through_another_task(): void
+    {
+        $task = $this->task();
+        $other = $this->task();
+        $activity = $task->activities()->create(['title' => 'Demo', 'status' => 'to do']);
+        $this->patch(route('tasks.activities.update', [$other, $activity]), ['status' => 'done'])->assertNotFound();
+        $this->assertSame('to do', $activity->fresh()->status);
+        $this->patch(route('tasks.activities.update', [$task, $activity]), ['status' => 'invalid'])->assertSessionHasErrors('status');
+    }
+}

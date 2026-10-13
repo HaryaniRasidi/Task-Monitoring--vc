@@ -1,0 +1,82 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Task;
+use Database\Seeders\TaskSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class TaskMonitoringTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_seeder_adds_ten_fictional_tasks_without_duplicates(): void
+    {
+        $this->seed(TaskSeeder::class);
+        $this->seed(TaskSeeder::class);
+        $this->assertDatabaseCount('tasks', 10);
+        $this->get('/')->assertOk()->assertViewIs('tasks.index')->assertSee('Demo task 01')
+            ->assertSee('Fictional Officer 01')->assertSee('name="_token"', false);
+    }
+
+    public function test_task_is_saved_and_escaped_and_extra_input_is_ignored(): void
+    {
+        $task = ['title' => '<script>alert(1)</script>', 'description' => '<b>Example</b>', 'owner' => 'Fictional Officer', 'owner_email' => 'officer@example.test', 'due_date' => '2026-11-01', 'priority' => 'high', 'status' => 'to do'];
+        $this->post('/tasks', $task + ['id' => 999])->assertRedirect('/')->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('tasks', array_diff_key($task, ['due_date' => true]));
+        $this->assertSame($task['due_date'], Task::firstOrFail()->due_date->format('Y-m-d'));
+        $this->assertDatabaseMissing('tasks', ['id' => 999]);
+        $this->get('/')->assertOk()->assertSee($task['title'])->assertDontSee($task['title'], false)
+            ->assertSee($task['description'])->assertDontSee($task['description'], false)->assertSee('Task added successfully.');
+    }
+
+    public function test_field_errors_and_previous_values_are_rendered(): void
+    {
+        $input = ['title' => 'Fictional review', 'description' => 'Keep this description', 'owner' => '', 'owner_email' => 'officer@example.test', 'due_date' => '2026-11-01', 'priority' => 'medium', 'status' => 'in progress'];
+        $response = $this->from('/')->post('/tasks', $input);
+        $response->assertRedirect('/')->assertSessionHasErrors('owner');
+        foreach (['title', 'description', 'due_date', 'priority', 'status'] as $field) {
+            $response->assertSessionHasInput($field, $input[$field]);
+        }
+        $this->get('/')->assertOk()->assertSee('Please enter an owner name.')
+            ->assertSee('id="owner-error"', false)->assertSee('value="Fictional review"', false)
+            ->assertSee('Keep this description')->assertSee('value="2026-11-01"', false)
+            ->assertSee('value="medium" selected', false)->assertSee('value="in progress" selected', false);
+        $this->assertDatabaseCount('tasks', 0);
+    }
+    public function test_language_choice_persists_and_rejects_unsupported_values(): void
+    {
+        $this->post('/language', ['locale' => 'ms'])->assertRedirect('/')->assertSessionHas('locale', 'ms');
+        $this->get('/')->assertOk()->assertSee('lang="ms"', false)->assertSee('Pemantauan Tugasan')->assertSee('Tambah tugasan');
+        $this->get('/')->assertSee('Pemantauan Tugasan');
+        $this->post('/language', ['locale' => 'invalid'])->assertSessionHasErrors('locale')->assertSessionHas('locale', 'ms');
+        $this->post('/language', ['locale' => 'en'])->assertRedirect('/');
+        $this->get('/')->assertSee('Task Monitoring');
+    }
+
+    public function test_only_unfinished_tasks_before_today_are_overdue(): void
+    {
+        $this->travelTo(\Illuminate\Support\Carbon::parse('2026-10-12 12:00:00', 'Asia/Kuala_Lumpur'));
+        foreach ([['2026-10-11', 'to do'], ['2026-10-11', 'done'], ['2026-10-12', 'in progress'], ['2026-10-13', 'to do']] as $i => [$date, $status]) {
+            Task::create(['title' => 'Fictional task '.$i, 'description' => 'Demo', 'owner' => 'Fictional Officer', 'owner_email' => 'officer@example.test', 'due_date' => $date, 'priority' => 'high', 'status' => $status]);
+        }
+        $response = $this->get('/')->assertOk()->assertSee('badge priority-high', false)->assertSee('badge status-in-progress', false)->assertSee('Overdue');
+        $this->assertSame(1, substr_count($response->getContent(), '<tr class="overdue">'));
+        $this->travelBack();
+    }
+    public function test_all_fields_are_required(): void
+    {
+        $this->from('/')->post('/tasks', [])->assertRedirect('/')
+            ->assertSessionHasErrors(['title', 'description', 'owner', 'due_date', 'priority', 'status']);
+        $this->assertDatabaseCount('tasks', 0);
+    }
+
+    public function test_invalid_fields_are_rejected_and_input_is_retained(): void
+    {
+        $this->from('/')->post('/tasks', ['title' => str_repeat('a', 201), 'description' => str_repeat('d', 5001), 'owner' => str_repeat('b', 101), 'due_date' => '2026-02-30', 'priority' => 'Urgent', 'status' => 'Unknown'])
+            ->assertRedirect('/')->assertSessionHasErrors(['title', 'description', 'owner', 'due_date', 'priority', 'status'])
+            ->assertSessionHasInput('priority', 'Urgent');
+        $this->assertDatabaseCount('tasks', 0);
+    }
+}
